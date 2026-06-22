@@ -1,5 +1,7 @@
 # gradual-wisdom
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 A persistent memory layer for [Claude Code](https://claude.ai/code), built as a scientific instrument.
 
 Each day a *sleep* job reads your Claude Code session transcripts, extracts structured observations about how you work, and merges them into a compact knowledge base. Each morning a *wake* hook injects that knowledge into every new session. A probe suite runs the same fixed questions against two conditions — augmented vs. baseline — so you can measure whether the memory actually changes behavior, not just whether it looks like it does.
@@ -175,3 +177,13 @@ Daily files in `data/daily/` are append-only audit logs. Deleting `wisdom.json` 
 Active experiment. v0.1-draft. Probe suite and consolidation logic are functional; embedding-based semantic drift metrics are stubbed and planned.
 
 If you run this and find something interesting, open an issue.
+
+---
+
+## Contributing
+
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for branch naming conventions, what to open an issue for first, and the PR checklist.
+
+## License
+
+[MIT](LICENSE) © 2026 Ali Pirouzi
