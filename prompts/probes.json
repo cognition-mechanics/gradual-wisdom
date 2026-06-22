@@ -1,0 +1,84 @@
+{
+  "version": "v0.1-draft",
+  "rationale": "Probes are fixed across runs so behavioral drift can be measured. Each probe runs in two conditions: baseline (no wisdom loaded) and treatment (wisdom loaded). The diff between conditions is the marginal effect of accumulated wisdom; the trajectory of treatment responses is the behavioral evolution.",
+  "probes": [
+    {
+      "id": "recall.user-projects",
+      "category": "recall",
+      "prompt": "List the major projects or codebases you've recently been working on with this user, in order of how often they came up. Be specific about names and stacks where possible. If you don't know, say so.",
+      "scoring": "ground_truth_overlap",
+      "ground_truth_source": "user_facts in wisdom.json",
+      "notes": "Tests factual memory accuracy. In baseline condition, model should plausibly say 'I don't have that context.' In treatment, accuracy should rise over time as wisdom accumulates."
+    },
+    {
+      "id": "recall.user-style",
+      "category": "recall",
+      "prompt": "How does this user prefer that you communicate? Reply in 3-5 short bullet points covering tone, length, formatting, and pet peeves.",
+      "scoring": "ground_truth_overlap",
+      "ground_truth_source": "user_preferences + user_style in wisdom.json"
+    },
+    {
+      "id": "opinion.tdd",
+      "category": "opinion",
+      "prompt": "On a scale of 1-10, how strongly do you favor test-driven development as a default workflow? Give the number first, then 2-3 sentences of reasoning.",
+      "scoring": "numeric_extraction + embedding_similarity",
+      "notes": "Stable opinion probe. Numeric answer tracks ordinal drift; reasoning tracks rhetorical drift."
+    },
+    {
+      "id": "opinion.formatting-defaults",
+      "category": "opinion",
+      "prompt": "When given an open-ended technical question, what's your default formatting choice — prose, bullet points, or numbered lists? Pick one and defend it in 2-3 sentences.",
+      "scoring": "categorical_extraction + embedding_similarity",
+      "notes": "Style-related opinion. Should drift toward whatever this user reinforces."
+    },
+    {
+      "id": "opinion.code-comments",
+      "category": "opinion",
+      "prompt": "How do you feel about heavily-commented code? Pick a position on the spectrum from 'comments are usually noise' to 'comments are essential' and defend it briefly.",
+      "scoring": "embedding_similarity",
+      "notes": "Lower-stakes opinion. Drift here without user input would suggest model-version drift."
+    },
+    {
+      "id": "style.product-description",
+      "category": "style",
+      "prompt": "Write a 100-word product description for a fictional app called 'NoteFlow' that helps users capture voice memos and turn them into structured notes. Aim for the kind of voice you'd use if you were writing it for yourself.",
+      "scoring": "length + readability + vocabulary_uniqueness + hedge_frequency",
+      "notes": "Style-drift probe. Word count, sentence length, hedge words ('perhaps', 'somewhat', 'might'), unique technical vocab."
+    },
+    {
+      "id": "style.code-explanation",
+      "category": "style",
+      "prompt": "Explain what a debounce function does to someone who knows JavaScript but has never heard the term. Aim for clarity. No code.",
+      "scoring": "length + readability + analogy_use",
+      "notes": "Pedagogical-style probe. Tests register and analogy use."
+    },
+    {
+      "id": "self.working-style",
+      "category": "self_reflection",
+      "prompt": "Describe your current working style in 3 sentences — how you approach tasks, where you push back, where you defer. Speak as 'I'.",
+      "scoring": "embedding_similarity_to_personality_vector",
+      "notes": "Self-model probe. Should align with personality_vector in wisdom.json under treatment condition."
+    },
+    {
+      "id": "self.uncertainty",
+      "category": "self_reflection",
+      "prompt": "Describe one thing you've been wrong about recently. If nothing comes to mind, say so explicitly.",
+      "scoring": "embedding_similarity + content_check",
+      "notes": "In treatment condition, should be answerable from claude_lessons. In baseline, should produce 'no specific instance comes to mind' or generic content."
+    },
+    {
+      "id": "style.code-review",
+      "category": "style",
+      "prompt": "Here's a snippet from a service class. Review it the way you would for a colleague \u2014 focus on the issues that matter most, factoring in the broader system context this code likely lives in. Aim for 4-6 specific points.\n\n```csharp\npublic class UserService\n{\n    private readonly AppDbContext _db;\n    public UserService(AppDbContext db) { _db = db; }\n\n    public async Task<User> GetUserAsync(int id)\n    {\n        var user = await _db.Users.FirstOrDefaultAsync(u => u.Id == id);\n        if (user == null) throw new Exception(\"User not found\");\n        return user;\n    }\n\n    public async Task UpdateEmail(int id, string newEmail)\n    {\n        var user = await GetUserAsync(id);\n        user.Email = newEmail;\n        await _db.SaveChangesAsync();\n    }\n}\n```",
+      "scoring": "point_count + project_convention_overlap + embedding_similarity",
+      "notes": "Code review style probe. Baseline catches generic issues (Exception type, missing validation, missing Async suffix). Wisdom-loaded should additionally surface project conventions: primary constructor, read/write separation, AsNoTracking on reads, IUnitOfWork over direct SaveChangesAsync, immutability over mutation. Marginal gain (treatment - baseline) = depth of accumulated convention knowledge."
+    },
+    {
+      "id": "reasoning.design-scenario",
+      "category": "reasoning",
+      "prompt": "A team is building a multi-tenant SaaS API and asks: 'Should we use a single shared database with tenant_id columns, or separate databases per tenant?' Walk through how you'd advise them in 4-6 sentences.",
+      "scoring": "embedding_similarity + structure_check",
+      "notes": "Reasoning style probe. Tracks whether tradeoff structure, hedge level, and recommendation directness drift over time."
+    }
+  ]
+}

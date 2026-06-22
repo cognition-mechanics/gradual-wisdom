@@ -1,0 +1,28 @@
+# Personal data — never publish
+data/wisdom.json
+data/daily/
+data/probes/
+data/debug/
+data/metrics.jsonl
+data/sleep.log
+data/probe.log
+data/health.txt
+data/archive/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+*.egg-info/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

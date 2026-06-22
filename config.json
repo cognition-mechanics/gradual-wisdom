@@ -1,0 +1,44 @@
+{
+  "version": "0.1.0",
+  "model": "claude-sonnet-4-5",
+  "runtime": "auto",
+  "max_tokens_per_call": 4096,
+
+  "decay_rate": 0.99,
+  "prune_threshold": 0.2,
+  "max_items_per_category": 200,
+
+  "initial_confidence_new_item": 0.5,
+  "reinforcement_boost": 0.1,
+  "max_confidence": 0.98,
+
+  "probe_interval_days": 3,
+  "probe_set_version": "v0.1-draft",
+
+  "wake_token_budget": 2000,
+
+  "session_min_messages": 4,
+  "consolidation_lock_seconds": 1800,
+
+  "categories": [
+    "user_facts",
+    "user_preferences",
+    "user_frustrations",
+    "user_style",
+    "claude_lessons",
+    "claude_calibrations",
+    "claude_opinions",
+    "shared_themes",
+    "relationship"
+  ],
+
+  "metrics_to_track": [
+    "memory_accuracy",
+    "opinion_stability",
+    "vocabulary_size",
+    "avg_response_length",
+    "hedge_frequency",
+    "list_vs_prose_ratio",
+    "personality_vector"
+  ]
+}
