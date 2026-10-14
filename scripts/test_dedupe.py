@@ -87,3 +87,21 @@ def test_find_duplicate_pairs_validates_ids_and_survives_bad_output():
     good = Client(json.dumps({"duplicates": {"f001": ["f002", "f999"]}}))
     assert dedupe.find_duplicate_pairs(good, "user_facts", items) == [("f001", "f002")]
     assert dedupe.find_duplicate_pairs(Client("garbage"), "user_facts", items) == []
+
+
+# --- reviewable proposals: dry run saves pairs, apply replays exactly them -----
+
+def test_proposal_round_trip(tmp_path):
+    pairs = {"user_facts": [("f001", "f002")], "user_style": []}
+    path = tmp_path / "proposal.json"
+    dedupe.save_proposal(path, pairs)
+    assert dedupe.load_proposal(path) == pairs
+
+
+def test_describe_clusters_lists_members_for_review():
+    items = [item("f001", "Prefers terse answers", conf=0.6), item("f002", "Wants short replies"),
+             item("f003", "Uses macOS")]
+    lines = dedupe.describe_clusters("user_facts", items, [("f001", "f002")])
+    text = "\n".join(lines)
+    assert "Prefers terse answers" in text and "Wants short replies" in text
+    assert "Uses macOS" not in text

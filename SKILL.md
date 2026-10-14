@@ -54,7 +54,7 @@ the user's global configuration (CLAUDE.md, hooks) — see the open issue on iso
 |------|---------|
 | `scripts/sleep.py` | End-of-day consolidation. Idempotent per UTC day. |
 | `scripts/wake.py` | Emits compact context for `SessionStart` hook to inject. |
-| `scripts/dedupe.py` | One-off cleanup: merges paraphrased duplicates already in wisdom.json (dry run by default, `--apply` to write; backs up first). |
+| `scripts/dedupe.py` | One-off cleanup: merges paraphrased duplicates already in wisdom.json. The dry run (default) saves a proposal plus a readable cluster list under `data/archive/`; `--apply --from <proposal>` applies exactly that reviewed proposal (backs up first). |
 | `scripts/catchup.py` | Session-start catch-up: consolidates any missed UTC days (daily-file = done-marker), bounded to a 14-day lookback, and runs the probe suite when due. Detached; never blocks the session. |
 | `scripts/session_start.sh` | The `SessionStart` hook: runs `wake.py` (injects wisdom) then launches `catchup.py` detached. Re-entrancy-guarded via `GRADUAL_WISDOM_CATCHUP`. |
 | `scripts/probe.py` | Runs the probe suite (baseline + treatment), saves responses. |

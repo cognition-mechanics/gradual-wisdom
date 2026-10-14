@@ -11,7 +11,7 @@ that carries the combined evidence.
 
 Usage:
     python3 dedupe.py             # dry run: report what would merge, write nothing
-    python3 dedupe.py --apply     # back up wisdom.json, then write the merged result
+    python3 dedupe.py --apply --from data/archive/dedupe-proposal-<date>.json   # apply the reviewed proposal
 """
 
 from __future__ import annotations
@@ -116,16 +116,41 @@ def find_duplicate_pairs(client: Any, category: str, items: list[dict[str, Any]]
     return sorted(pairs)
 
 
+def save_proposal(path: Path, pairs_by_category: dict[str, list[tuple[str, str]]]) -> None:
+    path.write_text(json.dumps({c: [list(p) for p in ps] for c, ps in pairs_by_category.items()}, indent=2))
+
+
+def load_proposal(path: Path) -> dict[str, list[tuple[str, str]]]:
+    return {c: [tuple(p) for p in ps] for c, ps in json.loads(path.read_text()).items()}
+
+
+def describe_clusters(category: str, items: list[dict[str, Any]], pairs: list[tuple[str, str]]) -> list[str]:
+    """Human-readable listing of each multi-item cluster, for review before --apply."""
+    by_id = {it["id"]: it for it in items}
+    lines: list[str] = []
+    for group in cluster(list(by_id), pairs):
+        if len(group) < 2:
+            continue
+        lines.append(f"[{category}]")
+        for i in sorted(group):
+            lines.append(f"   {i}: {sleep._match_text(by_id[i], category)[:160]}")
+    return lines
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--apply", action="store_true", help="write the result (default is a dry run)")
     ap.add_argument("--category", help="limit to one category")
+    ap.add_argument("--from", dest="from_file", help="apply a saved proposal instead of re-adjudicating")
     args = ap.parse_args()
 
     config = sleep.load_config()
     wisdom_path = sleep.DATA_DIR / "wisdom.json"
     wisdom = json.loads(wisdom_path.read_text())
-    client = sleep.get_client(config)
+    proposal = load_proposal(Path(args.from_file)) if args.from_file else None
+    client = None if proposal is not None else sleep.get_client(config)
+    found: dict[str, list[tuple[str, str]]] = {}
+    review: list[str] = []
 
     report: dict[str, Any] = {}
     new_items: dict[str, list[dict[str, Any]]] = {}
@@ -133,20 +158,26 @@ def main() -> int:
         if args.category and category != args.category:
             new_items[category] = items
             continue
-        pairs = find_duplicate_pairs(client, category, items)
+        pairs = proposal.get(category, []) if proposal is not None else find_duplicate_pairs(client, category, items)
+        found[category] = pairs
+        review.extend(describe_clusters(category, items, pairs))
         merged = dedupe_category(items, pairs, config)
         new_items[category] = merged
         clusters = [m for m in merged if m.get("merged_ids")]
         report[category] = {"before": len(items), "after": len(merged), "clusters": len(clusters)}
         print(f"{category:20} {len(items):4} -> {len(merged):4}  ({len(clusters)} clusters)")
 
-    if not args.apply:
-        print("\nDry run: nothing written. Re-run with --apply to write.")
-        return 0
-
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     archive = sleep.DATA_DIR / "archive"
     archive.mkdir(parents=True, exist_ok=True)
+    if not args.apply:
+        prop_path = archive / f"dedupe-proposal-{today}.json"
+        save_proposal(prop_path, found)
+        (archive / f"dedupe-proposal-{today}.txt").write_text("\n".join(review) + "\n")
+        print(f"\nDry run: nothing written to wisdom.json. Review {prop_path.with_suffix('.txt')},")
+        print(f"then apply exactly that proposal with: python3 scripts/dedupe.py --apply --from {prop_path}")
+        return 0
+
     backup = archive / f"wisdom.before-dedupe-{today}.json"
     backup.write_text(wisdom_path.read_text())
     wisdom["items"] = new_items
