@@ -61,6 +61,7 @@ def get_client(config: dict[str, Any]) -> LLMClient:
         model=config["model"],
         max_tokens=config["max_tokens_per_call"],
         runtime=config.get("runtime", "auto"),
+        fallbacks=config.get("model_fallbacks"),
     )
 
 

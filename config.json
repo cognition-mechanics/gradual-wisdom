@@ -1,6 +1,7 @@
 {
   "version": "0.1.0",
-  "model": "claude-sonnet-4-5",
+  "model": "sonnet",
+  "model_fallbacks": ["sonnet", "opus", "haiku"],
   "runtime": "auto",
   "max_tokens_per_call": 4096,
 
@@ -16,6 +17,7 @@
   "probe_set_version": "v0.1-draft",
 
   "wake_token_budget": 2000,
+  "wake_max_items_per_category": 8,
 
   "session_min_messages": 4,
   "consolidation_lock_seconds": 1800,

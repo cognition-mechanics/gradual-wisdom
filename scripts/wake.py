@@ -73,11 +73,33 @@ def render_item_content(category: str, it: dict[str, Any]) -> str:
         if obs and ev:
             return f"{obs}  [evidence: {ev}]"
         return obs or ev or it.get("content", "")
-    # default: content-bearing categories (user_*, claude_calibrations)
+    if category == "claude_calibrations":
+        obs = (it.get("observation") or "").strip()
+        adj = (it.get("adjustment") or "").strip()
+        if obs and adj:
+            return f"{obs} → {adj}"
+        return obs or adj or it.get("content", "")
+    # default: content-bearing categories (user_*)
     return it.get("content", "")
 
 
-def render_wisdom_block(wisdom: dict[str, Any], token_budget: int) -> str:
+DEFAULT_MAX_ITEMS_PER_CATEGORY = 8
+
+
+def _rank_key(item: dict[str, Any]) -> tuple[float, int, str]:
+    """Confidence first; ties broken by reinforcement count, then recency."""
+    return (
+        item.get("confidence", 0),
+        item.get("reinforcement_count", 1),
+        item.get("last_reinforced", ""),
+    )
+
+
+def render_wisdom_block(
+    wisdom: dict[str, Any],
+    token_budget: int,
+    max_items_per_category: int = DEFAULT_MAX_ITEMS_PER_CATEGORY,
+) -> str:
     """Produce a compact, structured block for context injection.
 
     Items are sorted by confidence within each category and trimmed to fit
@@ -133,18 +155,21 @@ def render_wisdom_block(wisdom: dict[str, Any], token_budget: int) -> str:
         cat_items = items.get(category, [])
         if not cat_items:
             continue
-        # sort by confidence desc, take all that fit
-        sorted_items = sorted(
-            cat_items,
-            key=lambda x: x.get("confidence", 0),
-            reverse=True,
-        )
-        lines.append(f"## {category}")
-        for it in sorted_items:
+        ranked = sorted(cat_items, key=_rank_key, reverse=True)
+        rendered: list[str] = []
+        for it in ranked:
+            content = render_item_content(category, it).strip()
+            if not content:
+                continue
             confidence = it.get("confidence", 0)
-            content = render_item_content(category, it)
             count = it.get("reinforcement_count", 1)
-            lines.append(f"- [{confidence:.2f}, x{count}] {content}")
+            rendered.append(f"- [{confidence:.2f}, x{count}] {content}")
+            if len(rendered) >= max_items_per_category:
+                break
+        if not rendered:
+            continue
+        lines.append(f"## {category}")
+        lines.extend(rendered)
         lines.append("")
 
     lines.append("=== END WISDOM ===")
@@ -167,16 +192,33 @@ def render_wisdom_block(wisdom: dict[str, Any], token_budget: int) -> str:
                 return 1.0
         worst = min(item_line_indices, key=conf_of)
         del lines[worst]
+        lines = _drop_empty_headings(lines)
         block = "\n".join(lines)
 
     return block
+
+
+def _drop_empty_headings(lines: list[str]) -> list[str]:
+    """Remove '## category' headings whose items were all trimmed away."""
+    out: list[str] = []
+    for i, ln in enumerate(lines):
+        if ln.startswith("## ") and ln != "## DUE REMINDERS":
+            nxt = lines[i + 1] if i + 1 < len(lines) else ""
+            if not nxt.startswith("- ["):
+                continue
+        out.append(ln)
+    return out
 
 
 def render_human(wisdom: dict[str, Any] | None) -> str:
     if wisdom is None:
         return "(no wisdom yet — first sleep cycle hasn't run)"
     config = load_config()
-    return render_wisdom_block(wisdom, config["wake_token_budget"])
+    return render_wisdom_block(
+        wisdom,
+        config["wake_token_budget"],
+        config.get("wake_max_items_per_category", DEFAULT_MAX_ITEMS_PER_CATEGORY),
+    )
 
 
 def main() -> int:

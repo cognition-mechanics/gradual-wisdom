@@ -26,3 +26,6 @@ __pycache__/
 .idea/
 *.swp
 *.swo
+
+# Runtime logs
+data/*.log
