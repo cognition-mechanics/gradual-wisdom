@@ -52,6 +52,7 @@ CONFIG_PATH = SKILL_ROOT / "config.json"
 PROMPTS_DIR = SKILL_ROOT / "prompts"
 CONSOLIDATE_PROMPT_PATH = PROMPTS_DIR / "consolidate.md"
 MERGE_PROMPT_PATH = PROMPTS_DIR / "merge.md"
+MATCH_PROMPT_PATH = PROMPTS_DIR / "match.md"
 
 PROJECTS_DIR = Path.home() / ".claude" / "projects"
 
@@ -326,6 +327,110 @@ def _primary_text(item: dict[str, Any], category: str) -> str:
     return item.get(field, "")
 
 
+# ---------------------------------------------------------------------------
+# Semantic matching: lexical candidate retrieval + batched LLM adjudication
+# ---------------------------------------------------------------------------
+
+_STOPWORDS = frozenset(
+    "a an the and or but of to in on for with without from by at as is are was were be been "
+    "being it its this that these those has have had do does did not no than then so very "
+    "user users claude assistant their them they he she his her who which what when where how "
+    "about into over more most less also just only".split()
+)
+MATCH_CANDIDATES_K = 5
+MATCH_MIN_OVERLAP = 0.15
+MATCH_BATCH_SIZE = 60
+
+
+def _match_text(item: dict[str, Any], category: str) -> str:
+    """Full display text used for retrieval and adjudication (primary + secondary field)."""
+    secondary = {"claude_lessons": "lesson", "claude_calibrations": "adjustment", "claude_opinions": "view"}
+    primary = _primary_text(item, category) or item.get("content", "")
+    extra = item.get(secondary.get(category, ""), "") if category in secondary else ""
+    return f"{primary} → {extra}" if primary and extra else (primary or extra)
+
+
+def _tokens(text: str) -> set[str]:
+    words = _normalize_text(text).split()
+    return {w[:-1] if len(w) > 4 and w.endswith("s") else w for w in words if w not in _STOPWORDS and len(w) > 2}
+
+
+def _find_candidates(
+    text: str,
+    existing_items: list[dict[str, Any]],
+    category: str,
+    k: int = MATCH_CANDIDATES_K,
+) -> list[dict[str, Any]]:
+    """Top-k stored items by Jaccard overlap of content words (cheap, deterministic)."""
+    query = _tokens(text)
+    if not query:
+        return []
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for item in existing_items:
+        toks = _tokens(_match_text(item, category))
+        if not toks:
+            continue
+        score = len(query & toks) / len(query | toks)
+        if score >= MATCH_MIN_OVERLAP:
+            scored.append((score, item))
+    scored.sort(key=lambda pair: pair[0], reverse=True)
+    return [item for _, item in scored[:k]]
+
+
+def adjudicate_matches(client: Any, requests: list[dict[str, Any]]) -> dict[str, str]:
+    """Ask the model which candidate (if any) each observation restates.
+
+    Returns {request_key: candidate_id} only for validated matches. Any failure
+    (exception, non-JSON, unknown ids) degrades to "no semantic match".
+    """
+    if not requests or client is None:
+        return {}
+    system = MATCH_PROMPT_PATH.read_text()
+    matches: dict[str, str] = {}
+    for start in range(0, len(requests), MATCH_BATCH_SIZE):
+        batch = requests[start:start + MATCH_BATCH_SIZE]
+        allowed = {r["key"]: {c["id"] for c in r["candidates"]} for r in batch}
+        try:
+            text = client.call(system=system, user_msg=json.dumps(batch, ensure_ascii=False))
+        except Exception as e:  # noqa: BLE001 — degrade, never break the nightly merge
+            sys.stderr.write(f"WARN: match adjudication failed ({e}); using lexical matching only\n")
+            continue
+        parsed = parse_json_strict(text, label="match") if isinstance(text, str) else None
+        raw = parsed.get("matches") if isinstance(parsed, dict) else None
+        if not isinstance(raw, dict):
+            continue
+        for key, cand_id in raw.items():
+            if isinstance(cand_id, str) and cand_id in allowed.get(key, set()):
+                matches[key] = cand_id
+    return matches
+
+
+def _semantic_matches(
+    client: Any,
+    existing_items_map: dict[str, list[dict[str, Any]]],
+    daily_items_by_category: dict[str, list[dict[str, Any]]],
+) -> dict[str, dict[int, str]]:
+    """Build adjudication requests for every daily item that has candidates; return per-category {index: id}."""
+    requests: list[dict[str, Any]] = []
+    for category, daily_items in daily_items_by_category.items():
+        existing = existing_items_map.get(category, [])
+        for idx, daily_item in enumerate(daily_items):
+            text = _match_text(daily_item, category)
+            cands = _find_candidates(text, existing, category)
+            if cands:
+                requests.append({
+                    "key": f"{category}:{idx}",
+                    "category": category,
+                    "observation": text,
+                    "candidates": [{"id": c.get("id", ""), "text": _match_text(c, category)} for c in cands],
+                })
+    by_category: dict[str, dict[int, str]] = {}
+    for key, cand_id in adjudicate_matches(client, requests).items():
+        category, _, idx = key.rpartition(":")
+        by_category.setdefault(category, {})[int(idx)] = cand_id
+    return by_category
+
+
 def _next_id(existing_items: list[dict[str, Any]], category: str) -> str:
     """Derive the next sequential id for the category.
 
@@ -419,6 +524,7 @@ def _merge_category(
     daily_items: list[dict[str, Any]],
     today: str,
     config: dict[str, Any],
+    semantic_matches: dict[int, str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Merge daily items into existing items for one category.
 
@@ -443,9 +549,24 @@ def _merge_category(
     working: list[dict[str, Any]] = [copy.deepcopy(it) for it in existing_items]
     touched: set[int] = set()  # indices into working
 
-    for daily_item in daily_items:
+    semantic_matches = semantic_matches or {}
+    id_to_idx = {it.get("id"): i for i, it in enumerate(working)}
+
+    for daily_pos, daily_item in enumerate(daily_items):
         daily_primary = _normalize_text(_primary_text(daily_item, category))
         if not daily_primary:
+            continue
+
+        matched_id = semantic_matches.get(daily_pos)
+        if matched_id is not None and matched_id in id_to_idx:
+            m_idx = id_to_idx[matched_id]
+            if m_idx not in touched:
+                w_item = working[m_idx]
+                w_item["confidence"] = min(w_item["confidence"] + boost, max_conf)
+                w_item["last_reinforced"] = today
+                w_item["reinforcement_count"] = w_item.get("reinforcement_count", 0) + 1
+                touched.add(m_idx)
+            # already reinforced this run → absorb
             continue
 
         best_ratio = 0.0
@@ -629,6 +750,7 @@ def merge_into_wisdom(
 
     existing_items_map = current_wisdom.get("items", {})
     max_items = config["max_items_per_category"]
+    semantic = _semantic_matches(client, existing_items_map, daily_items_by_category)
 
     for category in _CATEGORY_PRIMARY_FIELD:
         existing = existing_items_map.get(category, [])
@@ -640,6 +762,7 @@ def merge_into_wisdom(
             daily_items=daily,
             today=today,
             config=config,
+            semantic_matches=semantic.get(category),
         )
 
         kept, cap_pruned = _apply_hard_cap(category, kept, max_items)
