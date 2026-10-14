@@ -13,7 +13,7 @@ This is **scaffolded cognition**, not weight learning. The memory lives in a JSO
 ## How it works
 
 ```
-  sessions accumulate          sleep (nightly cron)
+  sessions accumulate          sleep (session-start catch-up)
   in ~/.claude/projects/  ──►  scripts/sleep.py
                                └─ reads today's transcripts
                                └─ extracts structured signal per session
@@ -27,7 +27,7 @@ This is **scaffolded cognition**, not weight learning. The memory lives in a JSO
                                └─ emits compact context block
                                └─ hook injects it at session start
 
-  twice-weekly cron            probe suite
+  session-start cadence        probe suite
                           ──►  scripts/probe.py
                                └─ runs each probe in two conditions:
                                   baseline  (no wisdom loaded)
@@ -43,9 +43,9 @@ This is **scaffolded cognition**, not weight learning. The memory lives in a JSO
 bash scripts/install.sh
 ```
 
-The installer checks your Python environment and prints the cron lines and `settings.json` hook you need to add. It does **not** modify your crontab or settings automatically — this is a brain implant; you should wire each connection yourself.
+The installer checks your Python environment and prints the `settings.json` `SessionStart` hook (`scripts/session_start.sh`) you need to add. Consolidation runs on **session start** via `catchup.py` (detached), which fills any missed UTC days and runs probes when due — there is **no cron**. This removes every scheduled-job failure mode (env stripping, laptop asleep at 03:00, silent overnight rc=1).
 
-> **macOS note:** Set `ANTHROPIC_API_KEY` explicitly in the cron environment. Do not rely on the `claude` CLI + Keychain fallback for scheduled jobs — macOS locks the Keychain when the screen sleeps, causing silent rc=1 failures overnight. Run probes during working hours or pass the API key directly.
+> **macOS note:** Because consolidation now runs on session start (when you are actively at the machine), the old cron pitfalls no longer apply — the Keychain is unlocked and the `claude` CLI auth works. No `ANTHROPIC_API_KEY` in a cron env is required.
 
 ---
 
@@ -110,6 +110,8 @@ gradual-wisdom/
 │   ├── probe.py                — probe suite runner
 │   ├── metrics.py              — longitudinal analysis reporter
 │   ├── health-check.sh         — sanity check for scheduled jobs
+│   ├── catchup.py              — session-start catch-up (consolidate missed days + probe)
+│   ├── session_start.sh        — SessionStart hook launcher (wake + detached catch-up)
 │   └── install.sh              — setup helper
 └── data/                       — excluded from git (your personal data)
     ├── wisdom.json             — cumulative state, loaded at wake

@@ -15,7 +15,7 @@ A diurnal cycle of consolidation and recall, layered on top of `continuous-learn
 - User wants to inspect, prune, edit, or reset accumulated wisdom
 - User wants to run probes or view longitudinal metrics
 - User wants to manually trigger a sleep cycle (e.g. `/dream`) or skip a day's consolidation
-- Setting up the cron job or `SessionStart` hook for the cycle
+- Setting up the `SessionStart` hook (session-start catch-up model; no cron)
 - Discussing the scientific framework — probe results, opinion drift, memory accuracy
 
 ## How It Works
@@ -23,7 +23,7 @@ A diurnal cycle of consolidation and recall, layered on top of `continuous-learn
 ```
         [waking]                                      [sleep]
 +-----------------------+                  +-------------------------+
-| Sessions accumulate    |                 | 03:00 cron triggers     |
+| Sessions accumulate    |                 | SessionStart catch-up   |
 | in ~/.claude/projects/ |  -- end of --> | scripts/sleep.py        |
 | (existing Claude Code  |     day         | (read-only, no tools)   |
 |  behavior)             |                 |                         |
@@ -53,9 +53,11 @@ and write access to its future self — nothing else.
 |------|---------|
 | `scripts/sleep.py` | End-of-day consolidation. Idempotent per UTC day. |
 | `scripts/wake.py` | Emits compact context for `SessionStart` hook to inject. |
+| `scripts/catchup.py` | Session-start catch-up: consolidates any missed UTC days (daily-file = done-marker), bounded to a 14-day lookback, and runs the probe suite when due. Detached; never blocks the session. |
+| `scripts/session_start.sh` | The `SessionStart` hook: runs `wake.py` (injects wisdom) then launches `catchup.py` detached. Re-entrancy-guarded via `GRADUAL_WISDOM_CATCHUP`. |
 | `scripts/probe.py` | Runs the probe suite (baseline + treatment), saves responses. |
 | `scripts/metrics.py` | Computes longitudinal metrics from probes & daily files. |
-| `scripts/install.sh` | One-shot setup: makes scripts executable, prints cron and hook lines. |
+| `scripts/install.sh` | One-shot setup: makes scripts executable, prints the `SessionStart` hook line. Consolidation runs on session start (catch-up); no cron. |
 | `prompts/consolidate.md` | The "dream" prompt — strict JSON output, no tools. |
 | `prompts/probes.json` | Versioned probe suite. v0.1 is a draft for co-design. |
 | `config.json` | Tunables: API model, decay rate, pruning threshold, probe interval. |

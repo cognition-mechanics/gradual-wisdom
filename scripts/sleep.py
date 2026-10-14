@@ -20,9 +20,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
+import difflib
 import json
 import os
 import re
+import string
 import sys
 import time
 from datetime import datetime, timezone, timedelta
@@ -257,6 +260,7 @@ def get_client(config: dict[str, Any]) -> LLMClient:
         model=config["model"],
         max_tokens=config["max_tokens_per_call"],
         runtime=config.get("runtime", "auto"),
+        fallbacks=config.get("model_fallbacks"),
     )
 
 
@@ -271,22 +275,395 @@ def consolidate_session(
     return parse_json_strict(text, label=f"consolidate({session_id})")
 
 
+# ---------------------------------------------------------------------------
+# Programmatic merge helpers
+# ---------------------------------------------------------------------------
+
+_CATEGORY_PRIMARY_FIELD: dict[str, str] = {
+    "user_facts": "content",
+    "user_preferences": "content",
+    "user_frustrations": "content",
+    "user_style": "content",
+    "claude_lessons": "what",
+    "claude_calibrations": "observation",
+    "claude_opinions": "topic",
+    "shared_themes": "topic",
+    "relationship": "observation",
+}
+
+_CATEGORY_FALLBACK_PREFIX: dict[str, str] = {
+    "user_facts": "f",
+    "user_preferences": "pr",
+    "user_frustrations": "fu",
+    "user_style": "st",
+    "claude_lessons": "l",
+    "claude_calibrations": "c",
+    "claude_opinions": "o",
+    "shared_themes": "t",
+    "relationship": "r",
+}
+
+_DAILY_SIGNAL_MAP: dict[str, tuple[str, str]] = {
+    # (session_path_key, sub_list_key) → category
+    # resolved via _extract_daily_items
+}
+
+_PERSONALITY_AXES = ["directness", "technical_depth", "humor", "verbosity", "hedging", "formality"]
+
+
+def _normalize_text(text: str) -> str:
+    lower = text.lower()
+    collapsed = re.sub(r"\s+", " ", lower).strip()
+    return collapsed.translate(str.maketrans("", "", string.punctuation))
+
+
+def _similarity(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def _primary_text(item: dict[str, Any], category: str) -> str:
+    field = _CATEGORY_PRIMARY_FIELD.get(category, "content")
+    return item.get(field, "")
+
+
+def _next_id(existing_items: list[dict[str, Any]], category: str) -> str:
+    """Derive the next sequential id for the category.
+
+    For non-empty categories: scan existing ids, extract the alpha prefix and
+    max numeric suffix, increment by 1 with zero-padding to 3 digits.
+    For empty categories: use the fallback prefix map with 001.
+    """
+    if not existing_items:
+        prefix = _CATEGORY_FALLBACK_PREFIX.get(category, "x")
+        return f"{prefix}001"
+
+    best_prefix = ""
+    best_num = 0
+    for item in existing_items:
+        item_id = item.get("id", "")
+        match = re.match(r"^([a-zA-Z]+)(\d+)$", item_id)
+        if not match:
+            continue
+        alpha = match.group(1)
+        num = int(match.group(2))
+        if num > best_num:
+            best_num = num
+            best_prefix = alpha
+
+    if not best_prefix:
+        best_prefix = _CATEGORY_FALLBACK_PREFIX.get(category, "x")
+        best_num = 0
+
+    return f"{best_prefix}{best_num + 1:03d}"
+
+
+def _extract_daily_items(daily_summary: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+    """Flatten all sessions into per-category lists of daily items.
+
+    Evidence fields are dropped; only the mapped text fields are kept.
+    """
+    category_items: dict[str, list[dict[str, Any]]] = {cat: [] for cat in _CATEGORY_PRIMARY_FIELD}
+
+    for session in daily_summary.get("sessions", []):
+        user_signals = session.get("user_signals", {})
+
+        for raw_item in user_signals.get("facts", []):
+            category_items["user_facts"].append({"content": raw_item.get("content", "")})
+
+        for raw_item in user_signals.get("preferences", []):
+            category_items["user_preferences"].append({"content": raw_item.get("content", "")})
+
+        for raw_item in user_signals.get("frustrations", []):
+            category_items["user_frustrations"].append({"content": raw_item.get("content", "")})
+
+        for raw_item in user_signals.get("style", []):
+            category_items["user_style"].append({"content": raw_item.get("content", "")})
+
+        claude_signals = session.get("claude_signals", {})
+
+        for raw_item in claude_signals.get("lessons", []):
+            category_items["claude_lessons"].append({
+                "what": raw_item.get("what", ""),
+                "lesson": raw_item.get("lesson", ""),
+            })
+
+        for raw_item in claude_signals.get("calibrations", []):
+            category_items["claude_calibrations"].append({
+                "observation": raw_item.get("observation", ""),
+                "adjustment": raw_item.get("adjustment", ""),
+            })
+
+        for raw_item in claude_signals.get("opinions", []):
+            category_items["claude_opinions"].append({
+                "topic": raw_item.get("topic", ""),
+                "view": raw_item.get("view", ""),
+            })
+
+        for raw_item in session.get("shared_themes", []):
+            category_items["shared_themes"].append({
+                "topic": raw_item.get("topic", ""),
+                "depth": raw_item.get("depth", ""),
+            })
+
+        for raw_item in session.get("relationship", []):
+            category_items["relationship"].append({
+                "observation": raw_item.get("observation", ""),
+            })
+
+    return category_items
+
+
+def _merge_category(
+    category: str,
+    existing_items: list[dict[str, Any]],
+    daily_items: list[dict[str, Any]],
+    today: str,
+    config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Merge daily items into existing items for one category.
+
+    Returns (merged_items, pruned_items). Pruning by threshold happens here;
+    hard-cap pruning happens in the caller after all categories are merged.
+
+    Algorithm:
+    - Working set = deep copy of existing items + items created this run.
+    - For each daily item:
+        1. Find best match (ratio>=0.85) among untouched working items → reinforce, mark touched.
+        2. Else if match among already-touched items → absorb (no-op).
+        3. Else → create new item, mark touched.
+    - Decay all untouched items.
+    - Prune items below threshold.
+    """
+    boost = config["reinforcement_boost"]
+    max_conf = config["max_confidence"]
+    decay_rate = config["decay_rate"]
+    prune_threshold = config["prune_threshold"]
+    initial_conf = config["initial_confidence_new_item"]
+
+    working: list[dict[str, Any]] = [copy.deepcopy(it) for it in existing_items]
+    touched: set[int] = set()  # indices into working
+
+    for daily_item in daily_items:
+        daily_primary = _normalize_text(_primary_text(daily_item, category))
+        if not daily_primary:
+            continue
+
+        best_ratio = 0.0
+        best_idx = -1
+        best_ratio_touched = 0.0
+        best_idx_touched = -1
+
+        for idx, w_item in enumerate(working):
+            w_primary = _normalize_text(_primary_text(w_item, category))
+            ratio = _similarity(daily_primary, w_primary)
+            if idx not in touched:
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_idx = idx
+            else:
+                if ratio > best_ratio_touched:
+                    best_ratio_touched = ratio
+                    best_idx_touched = idx
+
+        if best_ratio >= 0.85 and best_idx >= 0:
+            # Reinforce the best untouched match
+            w_item = working[best_idx]
+            w_item["confidence"] = min(w_item["confidence"] + boost, max_conf)
+            w_item["last_reinforced"] = today
+            w_item["reinforcement_count"] = w_item.get("reinforcement_count", 0) + 1
+            touched.add(best_idx)
+        elif best_ratio_touched >= 0.85 and best_idx_touched >= 0:
+            # Absorb: already-touched match found, no new item
+            pass
+        else:
+            # Create new item
+            new_id = _next_id(working, category)
+            new_item: dict[str, Any] = {
+                "id": new_id,
+                "confidence": initial_conf,
+                "first_seen": today,
+                "last_reinforced": today,
+                "reinforcement_count": 1,
+            }
+            new_item.update(daily_item)
+            working.append(new_item)
+            touched.add(len(working) - 1)
+
+    # Decay untouched items
+    for idx, w_item in enumerate(working):
+        if idx not in touched:
+            w_item["confidence"] *= decay_rate
+
+    # Prune by threshold
+    kept: list[dict[str, Any]] = []
+    pruned: list[dict[str, Any]] = []
+    for w_item in working:
+        if w_item["confidence"] < prune_threshold:
+            pruned_entry: dict[str, Any] = {
+                "id": w_item.get("id", ""),
+                "category": category,
+                "final_confidence": w_item["confidence"],
+                "first_seen": w_item.get("first_seen", ""),
+                "last_reinforced": w_item.get("last_reinforced", ""),
+            }
+            pruned_entry.update({k: v for k, v in w_item.items()
+                                  if k not in pruned_entry})
+            pruned.append(pruned_entry)
+        else:
+            kept.append(w_item)
+
+    return kept, pruned
+
+
+def _apply_hard_cap(
+    category: str,
+    items: list[dict[str, Any]],
+    max_items: int,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """If items exceed max_items, move the lowest-confidence excess to pruned."""
+    if len(items) <= max_items:
+        return items, []
+
+    sorted_items = sorted(items, key=lambda it: it["confidence"])
+    excess_count = len(items) - max_items
+    excess = sorted_items[:excess_count]
+    kept = sorted_items[excess_count:]
+
+    pruned: list[dict[str, Any]] = []
+    for it in excess:
+        pruned_entry: dict[str, Any] = {
+            "id": it.get("id", ""),
+            "category": category,
+            "final_confidence": it["confidence"],
+            "first_seen": it.get("first_seen", ""),
+            "last_reinforced": it.get("last_reinforced", ""),
+        }
+        pruned_entry.update({k: v for k, v in it.items() if k not in pruned_entry})
+        pruned.append(pruned_entry)
+
+    return kept, pruned
+
+
+def personality_target(client: Any, daily_summary: dict[str, Any]) -> dict[str, float] | None:
+    """Ask the model to read today's claude_signals + relationship items and return
+    a 6-axis personality vector. Returns None if the call fails or returns unparseable data.
+    Never raises.
+    """
+    prompt = (
+        "You are reading today's session signals for a gradual-wisdom system. "
+        "Based ONLY on the claude_signals (lessons, calibrations, opinions) and "
+        "relationship items in the daily summary below, return a JSON object with "
+        "exactly these six float keys in [0,1]: directness, technical_depth, humor, "
+        "verbosity, hedging, formality. "
+        "If there is insufficient signal to form a view, return the JSON string null. "
+        "Output ONLY the JSON — no commentary."
+    )
+    user_msg = json.dumps(daily_summary, indent=2)
+
+    try:
+        text = client.call(system=prompt, user_msg=user_msg)
+    except Exception:
+        return None
+
+    try:
+        cleaned = text.strip()
+        fence = re.match(r"^```(?:json)?\s*(.*?)\s*```$", cleaned, re.DOTALL)
+        if fence:
+            cleaned = fence.group(1).strip()
+        if cleaned.lower() in ("null", ""):
+            return None
+        parsed = json.loads(cleaned)
+        if not isinstance(parsed, dict):
+            return None
+        result: dict[str, float] = {}
+        for axis in _PERSONALITY_AXES:
+            if axis not in parsed:
+                return None
+            result[axis] = float(parsed[axis])
+        return result
+    except Exception:
+        return None
+
+
+def _nudge_personality(
+    current: dict[str, float],
+    target: dict[str, float] | None,
+) -> dict[str, float]:
+    """Nudge each axis from current toward target by at most 0.05, clamped to [0,1].
+
+    If target is None, hold current steady.
+    Seeds missing axes from 0.5.
+    """
+    base = {ax: current.get(ax, 0.5) for ax in _PERSONALITY_AXES}
+    if target is None:
+        return base
+
+    result: dict[str, float] = {}
+    for ax in _PERSONALITY_AXES:
+        cur = base[ax]
+        tgt = target.get(ax, cur)
+        raw_delta = tgt - cur
+        clamped_delta = max(-0.05, min(0.05, raw_delta))
+        result[ax] = max(0.0, min(1.0, cur + clamped_delta))
+    return result
+
+
 def merge_into_wisdom(
-    client: LLMClient,
+    client: Any,
     current_wisdom: dict[str, Any],
     daily_summary: dict[str, Any],
-) -> dict[str, Any] | None:
-    prompt = MERGE_PROMPT_PATH.read_text()
-    user_msg = (
-        "current_wisdom:\n```json\n"
-        + json.dumps(current_wisdom, indent=2)
-        + "\n```\n\n"
-        + "daily_summary:\n```json\n"
-        + json.dumps(daily_summary, indent=2)
-        + "\n```"
-    )
-    text = client.call(system=prompt, user_msg=user_msg)
-    return parse_json_strict(text, label="merge")
+    config: dict[str, Any],
+    today: str,
+) -> dict[str, Any]:
+    """Programmatic merge of daily_summary into current_wisdom.
+
+    Returns a new wisdom dict with keys: items, personality_vector, pruned,
+    first_seen (if present in current), and reminders (verbatim if present).
+    Does NOT set version, last_consolidation, or consolidation_count — the
+    caller (main) sets those after merge returns.
+    """
+    daily_items_by_category = _extract_daily_items(daily_summary)
+
+    new_items: dict[str, list[dict[str, Any]]] = {}
+    all_pruned: list[dict[str, Any]] = []
+
+    existing_items_map = current_wisdom.get("items", {})
+    max_items = config["max_items_per_category"]
+
+    for category in _CATEGORY_PRIMARY_FIELD:
+        existing = existing_items_map.get(category, [])
+        daily = daily_items_by_category.get(category, [])
+
+        kept, pruned = _merge_category(
+            category=category,
+            existing_items=existing,
+            daily_items=daily,
+            today=today,
+            config=config,
+        )
+
+        kept, cap_pruned = _apply_hard_cap(category, kept, max_items)
+        all_pruned.extend(pruned)
+        all_pruned.extend(cap_pruned)
+        new_items[category] = kept
+
+    pv_target = personality_target(client, daily_summary)
+    current_pv = current_wisdom.get("personality_vector", {})
+    new_pv = _nudge_personality(current_pv, pv_target)
+
+    result: dict[str, Any] = {
+        "items": new_items,
+        "personality_vector": new_pv,
+        "pruned": all_pruned,
+    }
+
+    if "first_seen" in current_wisdom:
+        result["first_seen"] = current_wisdom["first_seen"]
+
+    if "reminders" in current_wisdom:
+        result["reminders"] = current_wisdom["reminders"]
+
+    return result
 
 
 def parse_json_strict(text: str, label: str) -> dict[str, Any] | None:
@@ -454,6 +831,8 @@ def main() -> int:
             client=client,
             current_wisdom=current_wisdom,
             daily_summary=daily_summary,
+            config=config,
+            today=today,
         )
 
         if new_wisdom is None:
