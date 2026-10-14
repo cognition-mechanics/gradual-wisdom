@@ -134,6 +134,7 @@ class LLMClient:
         transient=True when failure looks like a rate limit / overload rather
         than a genuinely invalid model."""
         cmd = ["claude", "-p", "ok", "--model", model, "--max-turns", "1"]
+        timed_out = False
         for attempt in range(2):
             if attempt:
                 time.sleep(10)
@@ -142,12 +143,13 @@ class LLMClient:
                     cmd, capture_output=True, text=True, timeout=120, cwd=str(RUNTIME_CWD)
                 )
             except subprocess.TimeoutExpired:
-                continue  # treat as transient, retry once
+                timed_out = True  # slow/overloaded, not an invalid model; retry once
+                continue
             if result.returncode == 0:
                 return True, False
             if _is_transient(result.stderr):
                 return False, True
-        return False, False
+        return False, timed_out
 
     def call(self, system: str, user_msg: str) -> str:
         if self.runtime == "api":
