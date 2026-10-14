@@ -102,10 +102,13 @@ gradual-wisdom/
 ├── config.json                 — tunables (model, decay rate, confidence thresholds)
 ├── prompts/
 │   ├── consolidate.md          — per-session extraction prompt
-│   ├── merge.md                — daily-into-wisdom merge prompt
+│   ├── merge.md                — legacy merge prompt (merge is programmatic now)
+│   ├── match.md                — semantic matching of new vs stored observations
+│   ├── dedupe.md               — duplicate detection for dedupe.py
 │   └── probes.json             — versioned probe suite (do not edit in place)
 ├── scripts/
-│   ├── sleep.py                — nightly consolidation job
+│   ├── sleep.py                — consolidation of one day (run by catchup.py)
+│   ├── dedupe.py               — one-off merge of paraphrased duplicates
 │   ├── wake.py                 — SessionStart hook emitter
 │   ├── probe.py                — probe suite runner
 │   ├── metrics.py              — longitudinal analysis reporter
@@ -129,12 +132,13 @@ All tunables are in `config.json`:
 
 ```json
 {
-  "model": "claude-sonnet-4-5",
+  "model": "sonnet",
   "runtime": "auto",
   "decay_rate": 0.99,
   "prune_threshold": 0.20,
   "probe_interval_days": 3,
-  "wake_token_budget": 2000
+  "wake_token_budget": 2000,
+  "wake_max_items_per_category": 8
 }
 ```
 
@@ -144,10 +148,10 @@ All tunables are in `config.json`:
 
 ## Cost
 
-- **Sleep cycle:** ~1–2 API calls per substantive session. At 4–8 sessions/day with `claude-sonnet-4-5`, expect ~$0.10–0.30/day.
+- **Sleep cycle:** ~1–2 API calls per substantive session. Plus one batched matching call per day. At 4–8 sessions/day with `sonnet`, expect ~$0.10–0.30/day.
 - **Probe suite** (10 probes × 2 conditions, twice weekly): ~$0.30–0.50/week.
 
-Switch `model` to `claude-haiku-4-5` in `config.json` for a ~10× cost reduction with acceptable quality.
+Switch `model` to `haiku` in `config.json` for a ~10× cost reduction with acceptable quality.
 
 ---
 
