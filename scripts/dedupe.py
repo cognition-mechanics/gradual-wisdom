@@ -50,15 +50,33 @@ def cluster(ids: list[str], pairs: list[tuple[str, str]]) -> list[set[str]]:
     return list(groups.values())
 
 
+def _rank(it: dict[str, Any]) -> tuple[float, int, str]:
+    return (it.get("confidence", 0), it.get("reinforcement_count", 1), it.get("last_reinforced", ""))
+
+
+def star_groups(items: list[dict[str, Any]], pairs: list[tuple[str, str]]) -> list[list[str]]:
+    """Group ids so every member was matched *directly* with the group's representative.
+
+    Union-find alone chains A~B~C into one cluster even when A and C are different
+    claims. Within each connected component, the highest-ranked item is the
+    representative; only its direct partners join it, and the rest stay unmerged.
+    """
+    by_id = {it["id"]: it for it in items}
+    direct = {(a, b) for a, b in pairs} | {(b, a) for a, b in pairs}
+    groups: list[list[str]] = []
+    for component in cluster(list(by_id), pairs):
+        rep_id = max(component, key=lambda i: _rank(by_id[i]))
+        members = [rep_id] + sorted(i for i in component if i != rep_id and (rep_id, i) in direct)
+        groups.append(members)
+        groups.extend([i] for i in sorted(component) if i not in members)
+    return groups
+
+
 def merge_cluster(items: list[dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
     """Merge duplicates into the highest-confidence item, combining their evidence."""
     if len(items) == 1:
         return items[0]
-    ranked = sorted(
-        items,
-        key=lambda it: (it.get("confidence", 0), it.get("reinforcement_count", 1), it.get("last_reinforced", "")),
-        reverse=True,
-    )
+    ranked = sorted(items, key=_rank, reverse=True)
     rep = dict(ranked[0])
     extra = len(items) - 1
     rep["confidence"] = min(rep.get("confidence", 0) + config["reinforcement_boost"] * extra, config["max_confidence"])
@@ -75,7 +93,7 @@ def dedupe_category(
     config: dict[str, Any],
 ) -> list[dict[str, Any]]:
     by_id = {it["id"]: it for it in items}
-    return [merge_cluster([by_id[i] for i in group], config) for group in cluster(list(by_id), pairs)]
+    return [merge_cluster([by_id[i] for i in group], config) for group in star_groups(items, pairs)]
 
 
 def find_duplicate_pairs(client: Any, category: str, items: list[dict[str, Any]]) -> list[tuple[str, str]]:
@@ -128,11 +146,11 @@ def describe_clusters(category: str, items: list[dict[str, Any]], pairs: list[tu
     """Human-readable listing of each multi-item cluster, for review before --apply."""
     by_id = {it["id"]: it for it in items}
     lines: list[str] = []
-    for group in cluster(list(by_id), pairs):
+    for group in star_groups(items, pairs):
         if len(group) < 2:
             continue
         lines.append(f"[{category}]")
-        for i in sorted(group):
+        for i in group:
             lines.append(f"   {i}: {sleep._match_text(by_id[i], category)[:160]}")
     return lines
 

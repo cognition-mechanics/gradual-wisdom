@@ -105,3 +105,19 @@ def test_describe_clusters_lists_members_for_review():
     text = "\n".join(lines)
     assert "Prefers terse answers" in text and "Wants short replies" in text
     assert "Uses macOS" not in text
+
+
+# --- no merging through chains: members must pair directly with the representative
+
+def test_chained_pairs_do_not_merge_items_that_never_matched_the_representative():
+    items = [
+        item("f001", "Owns a VPS running personal apps", conf=0.9),
+        item("f002", "Runs a blog on the VPS", conf=0.5),
+        item("f003", "Maintains the blog project", conf=0.5),
+    ]
+    # f001~f002 and f002~f003, but f003 never matched f001 (the representative)
+    result = dedupe.dedupe_category(items, pairs=[("f001", "f002"), ("f002", "f003")], config=CONFIG)
+    by_id = {i["id"]: i for i in result}
+    assert set(by_id) == {"f001", "f003"}
+    assert by_id["f001"]["merged_ids"] == ["f002"]
+    assert "merged_ids" not in by_id["f003"]
