@@ -97,3 +97,47 @@ def test_reinforced_items_outrank_equal_confidence_singletons():
     block = wake.render_wisdom_block(w, token_budget=2000, max_items_per_category=1)
     assert "seen four times" in block
     assert "seen once" not in block
+
+
+# --- near-duplicates render once, so paraphrases don't eat the category cap --
+
+def test_near_duplicate_items_render_once_and_free_the_slot():
+    facts = [
+        make_item(0.9, content="Runs dev, staging and prod environments on a shared Twilio account"),
+        make_item(0.8, content="Runs dev, staging and prod environments, each on a shared Twilio account"),
+        make_item(0.5, content="Owns a personal calendar side project"),
+    ]
+    w = wisdom_with({"user_facts": facts})
+    block = wake.render_wisdom_block(w, token_budget=2000, max_items_per_category=2)
+    assert block.count("Twilio") == 1, block
+    assert "calendar side project" in block
+
+
+def test_distinct_items_sharing_some_words_both_render():
+    facts = [
+        make_item(0.9, content="Works on the Aspire superproject with four submodules"),
+        make_item(0.8, content="Tracks work in Azure DevOps stories with child tasks"),
+    ]
+    block = wake.render_wisdom_block(wisdom_with({"user_facts": facts}), token_budget=2000)
+    assert "Aspire superproject" in block and "Azure DevOps stories" in block
+
+
+# --- the block is history, not a grant of authority --------------------------
+
+def test_block_states_observations_do_not_authorize_actions():
+    w = wisdom_with({"relationship": [make_item(0.8, observation="Granted autonomy once")]})
+    block = wake.render_wisdom_block(w, token_budget=2000)
+    assert wake.AUTHORITY_CAVEAT in block
+    assert block.index(wake.AUTHORITY_CAVEAT) < block.index("## relationship")
+
+
+def test_category_limits_override_the_default_cap():
+    topics = ["deploys", "reviews", "pushback", "naming", "testing", "pairing"]
+    rel = [make_item(round(0.5 + i * 0.01, 2), observation=f"Relationship note on {t}") for i, t in enumerate(topics)]
+    facts = [make_item(round(0.5 + i * 0.01, 2), content=f"fact{i} unique{i}") for i in range(6)]
+    w = wisdom_with({"relationship": rel, "user_facts": facts})
+    block = wake.render_wisdom_block(
+        w, token_budget=4000, max_items_per_category=5, category_limits={"relationship": 2}
+    )
+    assert sum(1 for ln in block.splitlines() if "Relationship note" in ln) == 2
+    assert sum(1 for ln in block.splitlines() if ln.startswith("- [") and "fact" in ln) == 5

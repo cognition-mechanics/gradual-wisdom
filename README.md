@@ -138,9 +138,12 @@ All tunables are in `config.json`:
   "prune_threshold": 0.20,
   "probe_interval_days": 3,
   "wake_token_budget": 2000,
-  "wake_max_items_per_category": 8
+  "wake_max_items_per_category": 8,
+  "wake_category_limits": {"relationship": 3}
 }
 ```
+
+`wake_category_limits` overrides the per-category cap for specific categories. When the wake block is rendered, near-duplicate items in a category (≥60% shared content words, at least 4 words each) appear once, and the block states that past permissions do not authorize actions in the new session.
 
 `runtime: "auto"` uses the Anthropic SDK if `ANTHROPIC_API_KEY` is set, otherwise falls back to the `claude` CLI. For scheduled jobs, always set `ANTHROPIC_API_KEY` — see install note.
 

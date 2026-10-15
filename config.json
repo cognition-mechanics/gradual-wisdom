@@ -18,6 +18,7 @@
 
   "wake_token_budget": 2000,
   "wake_max_items_per_category": 8,
+  "wake_category_limits": {"relationship": 3},
 
   "session_min_messages": 4,
   "consolidation_lock_seconds": 1800,
