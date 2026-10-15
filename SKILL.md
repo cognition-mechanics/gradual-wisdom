@@ -1,6 +1,6 @@
 ---
 name: gradual-wisdom
-description: Diurnal consolidation cycle for Claude Code. A "sleep" process condenses each past day's sessions into structured wisdom (run as a detached catch-up at session start), and a "wake" hook injects that wisdom into every new session's context. Repeated observations are matched semantically, so they reinforce instead of piling up. Includes a scientific probe suite for measuring behavioral drift over time. The intent is to grow Claude's persistent context (scaffolded cognition) and to make that growth measurable.
+description: "Diurnal memory for Claude Code: a sleep pass condenses past sessions into wisdom, a wake hook injects it at session start, probes measure drift. Use when working on or debugging gradual-wisdom itself."
 origin: user
 version: 0.1.0
 ---
